@@ -1,0 +1,14 @@
+{
+  "name": "jamaker-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Worker local JA MAKER : exécute les jobs sur votre PC avec vos comptes navigateur gratuits.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "login": "node login.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

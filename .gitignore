@@ -1,0 +1,14 @@
+node_modules/
+.data/
+.next/
+out/
+.env
+.env.local
+.env.*.local
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+# Profils navigateur du worker : sessions privées, jamais commitées
+worker/profiles/
+worker/profiles.json
