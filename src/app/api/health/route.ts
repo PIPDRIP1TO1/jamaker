@@ -1,5 +1,8 @@
 import { getDb } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 function sanitize(message: string) {
   return message
     .replace(/Bearer\s+[A-Za-z0-9\-_.]+/gi, "Bearer [redacted]")
