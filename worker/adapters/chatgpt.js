@@ -106,12 +106,25 @@ async function evaluate(cdp, expression, awaitPromise) {
 }
 
 const COMPOSER_JS = `(() => {
-  const el = document.querySelector('form [contenteditable="true"]') || document.querySelector('#prompt-textarea') || document.querySelector('form textarea');
-  return !!el;
+  const box = document.querySelector('main form [contenteditable="true"]') || document.querySelector('#prompt-textarea') || document.querySelector('main form textarea');
+  if (!box) return false;
+  const form = box.closest('form');
+  return !!(form && form.querySelector('button[type="submit"], [data-testid="send-button"]'));
 })()`;
 
 const SEND_JS = `(TEXT => {
-  const box = document.querySelector('form [contenteditable="true"]') || document.querySelector('#prompt-textarea') || document.querySelector('form textarea');
+  const candidates = [
+    document.querySelector('#prompt-textarea'),
+    document.querySelector('main form textarea'),
+    document.querySelector('main form [contenteditable="true"]'),
+    document.querySelector('form textarea'),
+    document.querySelector('form [contenteditable="true"]'),
+  ].filter(Boolean);
+  // Le vrai composer : son formulaire contient un bouton d'envoi.
+  const box = candidates.find((el) => {
+    const form = el.closest('form');
+    return form && form.querySelector('button[type="submit"], [data-testid="send-button"]');
+  }) || null;
   if (!box) return 'no-composer';
   const form = box.closest('form');
   if (!form) return 'no-form';
