@@ -33,7 +33,6 @@ function stealthArgs() {
     "--hide-crash-restore-bubble",
     "--password-store=basic",
     "--disable-dev-shm-usage",
-    "--disable-blink-features=AutomationControlled",
     "--disable-infobars",
     "--disable-notifications",
     "--disable-popup-blocking",

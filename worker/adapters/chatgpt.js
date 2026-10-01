@@ -15,11 +15,11 @@ const POLL_MS = 2000;
 module.exports.profileDir = profileDir;
 module.exports.loadMapping = loadMapping;
 
-async function waitJson(url, timeoutMs, predicate) {
+async function waitJson(url, timeoutMs, predicate, method) {
   const start = Date.now();
   for (;;) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, method ? { method } : undefined);
       if (res.ok) {
         const data = await res.json();
         if (!predicate || predicate(data)) return data;
@@ -199,8 +199,13 @@ async function chatgptArticle(job, logs) {
   try {
     const versionInfo = await waitJson(`http://127.0.0.1:${port}/json/version`, 20000);
     throwIfDead(child, "chatgpt", profile);
-    const targets = await waitJson(`http://127.0.0.1:${port}/json/list`, NAV_TIMEOUT_MS, (list) => Array.isArray(list) && list.some((t) => t.type === "page"));
-    let page = targets.find((t) => t.type === "page" && t.url.startsWith("http")) || targets.find((t) => t.type === "page");
+    // Nouvel onglet dédié (pas le 1er venu : session restore peut en ouvrir d'autres).
+    const created = await waitJson(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(CHATGPT_URL)}`, NAV_TIMEOUT_MS, null, "PUT").catch(() => null);
+    let page = created && created.webSocketDebuggerUrl ? created : null;
+    if (!page) {
+      const targets = await waitJson(`http://127.0.0.1:${port}/json/list`, NAV_TIMEOUT_MS, (list) => Array.isArray(list) && list.some((t) => t.type === "page"));
+      page = targets.find((t) => t.type === "page" && t.url.startsWith("http")) || targets.find((t) => t.type === "page");
+    }
     if (!page || !page.webSocketDebuggerUrl) throw new Error("Onglet Chrome introuvable.");
     cdp = await connect(page.webSocketDebuggerUrl);
     await applyStealth(cdp, versionInfo && versionInfo.Browser, { spoof: false });
