@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useMemo, useRef, useState } from "react";
-import { generateRecipeAction, publishRecipeToWordPressAction, reviseRecipeAction, sendRecipeImagesToWorkerAction, type PublishState, type RecipeState } from "@/app/actions/recipe";
+import { applyWorkerIntroAction, generateRecipeAction, publishRecipeToWordPressAction, reviseRecipeAction, sendRecipeImagesToWorkerAction, sendRecipeIntroToWorkerAction, type PublishState, type RecipeState } from "@/app/actions/recipe";
 import { duplicateExampleAction } from "@/app/actions/projects";
 
 type Output = { id: string; title: string; content_json: string; created_at: string };
@@ -91,6 +91,7 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
   const [revState, revAction, revPending] = useActionState(reviseRecipeAction, revInitial);
   const [pubState, pubAction, pubPending] = useActionState(publishRecipeToWordPressAction, pubInitial);
   const [imgState, imgAction, imgPending] = useActionState(sendRecipeImagesToWorkerAction, genInitial);
+  const [introState, introAction, introPending] = useActionState(sendRecipeIntroToWorkerAction, genInitial);
   const [workerProfile, setWorkerProfile] = useState("Profil principal");
   const [approveText, setApproveText] = useState(false);
   const [approveImages, setApproveImages] = useState(false);
@@ -114,7 +115,15 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
     if (parsed.promptServing) setPromptServing(parsed.promptServing);
   }
   const latest: (Output & { article: Article | null }) | null = useMemo(() => {
-    const first = outputs[0];
+    // Dernier BROUILLON recette (les résultats worker ont une autre forme).
+    const first = outputs.find((output) => {
+      try {
+        const parsed = JSON.parse(output.content_json) as { ingredients?: unknown; instructions?: unknown };
+        return Array.isArray(parsed.ingredients) && Array.isArray(parsed.instructions);
+      } catch {
+        return false;
+      }
+    });
     if (!first) return null;
     try {
       return { ...first, article: JSON.parse(first.content_json) as Article };
@@ -123,6 +132,20 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
     }
   }, [outputs]);
   const canPublish = approveText && approveImages && Boolean(latest?.article?.seoAudit?.publishReady);
+  const workerTexts = useMemo(() => {
+    const found: Array<{ id: string; title: string; created_at: string; text: string }> = [];
+    for (const output of outputs) {
+      try {
+        const parsed = JSON.parse(output.content_json) as { mode?: string; text?: string };
+        if ((parsed.mode === "worker-chatgpt" || parsed.mode === "worker-deepseek") && typeof parsed.text === "string" && parsed.text.length > 20) {
+          found.push({ id: output.id, title: output.title, created_at: output.created_at, text: parsed.text.slice(0, 2000) });
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return found;
+  }, [outputs]);
   const workerImages = useMemo(() => {
     const found: Array<{ id: string; title: string; created_at: string; images: Array<{ role: string; dataUrl: string }> }> = [];
     for (const output of outputs) {
@@ -182,6 +205,34 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
         {!hasBrowserAi && <p className="billing-note">Astuce : déclarez vos comptes navigateur gratuits (ChatGPT, Gemini…) dans Mes connexions → le worker local s&apos;en servira pour l&apos;IA.</p>}
       </section>
 
+      <section className="panel">
+        <div className="workspace-topline"><span>Introduction IA (worker local, gratuit)</span><small>ChatGPT / DeepSeek via vos profils</small></div>
+        <form action={introAction} className="settings-actions">
+          <input type="hidden" name="projectId" value={projectId} />
+          <label>IA worker<select name="adapter" defaultValue="chatgpt"><option value="chatgpt">ChatGPT web</option><option value="deepseek">DeepSeek web</option></select></label>
+          <label>Profil<input name="browserProfile" value={workerProfile} onChange={(e) => setWorkerProfile(e.target.value)} maxLength={80} /></label>
+          <small>{hasBrowserAi ? "Introduction rédigée par vos comptes navigateur (gratuit)." : "Déclarez un compte navigateur, connectez-vous via LOGIN.bat, démarrez le worker."}</small>
+          <button className="button button-small" type="submit" disabled={isExample || introPending}>{introPending ? "Envoi…" : "Générer l'intro via worker"}</button>
+        </form>
+        {introState.message && <p className="billing-note" role="status">{introState.message}</p>}
+        {workerTexts.length > 0 && (
+          <div>
+            <div className="workspace-topline"><span>Intros IA du worker</span><small>{latest ? "Cliquez pour appliquer" : "Générez un brouillon pour pouvoir les appliquer"}</small></div>
+            {workerTexts.map((item) => (
+              <details className="output-item" key={item.id}>
+                <summary><div><strong>{item.title}</strong><small>{new Date(item.created_at).toLocaleString("fr-FR")}</small></div><span>Appliquer</span></summary>
+                <pre>{item.text}</pre>
+                <form action={applyWorkerIntroAction}>
+                  <input type="hidden" name="projectId" value={projectId} />
+                  <input type="hidden" name="workerOutputId" value={item.id} />
+                  <button className="button button-small" type="submit" disabled={!latest}>Utiliser comme introduction</button>
+                </form>
+              </details>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="panel output-panel">
         <div className="workspace-topline"><div><span>Prévisualisation + validation</span><small>{outputs.length} version(s)</small></div></div>
         {!latest || !latest.article ? (
@@ -211,14 +262,14 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
                 <summary><strong>Brief SEO utilisé</strong><span>Intent, cluster, plan et maillage interne</span></summary>
                 <div className="seo-brief-grid">
                   <div><small>Intent</small><strong>{latest.article.seoBrief.searchIntent}</strong><p>{latest.article.seoBrief.audience}</p></div>
-                  <div><small>Mots-clés secondaires</small><p>{latest.article.seoBrief.secondaryKeywords.join(" • ")}</p></div>
-                  <div><small>Plan recommandé</small><ol>{latest.article.seoBrief.outline.map((item) => <li key={item}>{item}</li>)}</ol></div>
-                  <div><small>Liens internes à ajouter</small><ul>{latest.article.seoBrief.internalLinkIdeas.map((item) => <li key={item}>{item}</li>)}</ul></div>
+                  <div><small>Mots-clés secondaires</small><p>{(latest.article.seoBrief.secondaryKeywords || []).join(" • ")}</p></div>
+                  <div><small>Plan recommandé</small><ol>{(latest.article.seoBrief.outline || []).map((item) => <li key={item}>{item}</li>)}</ol></div>
+                  <div><small>Liens internes à ajouter</small><ul>{(latest.article.seoBrief.internalLinkIdeas || []).map((item) => <li key={item}>{item}</li>)}</ul></div>
                 </div>
               </details>
             )}
-            <div className="output-item"><pre>{`${latest.article.introduction}\n\nINGRÉDIENTS:\n- ${latest.article.ingredients.join("\n- ")}\n\nINSTRUCTIONS:\n${latest.article.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n")}\n\nFAQ:\n${latest.article.faq.map((f) => `Q: ${f.q}\nA: ${f.a}`).join("\n")}`}</pre></div>
-            <div className="output-item"><pre>{`IMAGES (prompts pour Gemini) :\n1. ${latest.article.imagePrompts.featured}\n2. ${latest.article.imagePrompts.hero}\n3. ${latest.article.imagePrompts.ingredients}\n4. ${latest.article.imagePrompts.serving}`}</pre></div>
+            <div className="output-item"><pre>{`${latest.article.introduction || ""}\n\nINGRÉDIENTS:\n- ${(latest.article.ingredients || []).join("\n- ")}\n\nINSTRUCTIONS:\n${(latest.article.instructions || []).map((s, i) => `${i + 1}. ${s}`).join("\n")}\n\nFAQ:\n${(latest.article.faq || []).map((f) => `Q: ${f.q}\nA: ${f.a}`).join("\n")}`}</pre></div>
+            <div className="output-item"><pre>{`IMAGES (prompts pour Gemini) :\n1. ${latest.article.imagePrompts?.featured || ""}\n2. ${latest.article.imagePrompts?.hero || ""}\n3. ${latest.article.imagePrompts?.ingredients || ""}\n4. ${latest.article.imagePrompts?.serving || ""}`}</pre></div>
             {latest.article.stockPhotos && latest.article.stockPhotos.length > 0 && (
               <div>
                 <div className="workspace-topline"><span>Photos pro (Pexels, fiable)</span></div>

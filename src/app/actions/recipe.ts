@@ -114,6 +114,85 @@ export async function reviseRecipeAction(_state: RecipeState, formData: FormData
   return { message: "Révision enregistrée en local (nouvelle version).", aiUsed };
 }
 
+export async function sendRecipeIntroToWorkerAction(_state: RecipeState, formData: FormData): Promise<RecipeState> {
+  const session = await requireSession();
+  const projectId = String(formData.get("projectId") || "");
+  const adapter = String(formData.get("adapter") || "chatgpt");
+  const browserProfile = String(formData.get("browserProfile") || "").trim().slice(0, 80) || "Profil principal";
+  if (!projectId) return { message: "Projet introuvable." };
+  if (adapter !== "chatgpt" && adapter !== "deepseek") return { message: "Adapter invalide." };
+  const db = await getDb();
+  const current = await db.query<{ config_json: string }>("SELECT config_json FROM module_projects WHERE id = $1 AND organization_id = $2 AND module_slug = 'recipe-creator' AND is_example = 0 LIMIT 1", [projectId, session.organization.id]);
+  if (!current.rows[0]) return { message: "Projet introuvable." };
+  let config: Record<string, unknown> = {};
+  try {
+    config = JSON.parse(current.rows[0].config_json || "{}");
+  } catch {
+    config = {};
+  }
+  const inputs = (config.inputs || {}) as Record<string, unknown>;
+  const title = String(inputs.recipeTitle || "cette recette");
+  const language = String(inputs.language || "en");
+  const ingredients = String(inputs.ingredients || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean).slice(0, 12).join("; ");
+  config.inputs = {
+    ...inputs,
+    workerAdapter: adapter,
+    browserProfile,
+    workerPrompt: `Écris une introduction de recette appétissante (120-180 mots, langue: ${language}). Recette: ${title}. Ingrédients: ${ingredients || "voir brouillon"}. Ton chaleureux, sans fluff.`,
+    recipeIntroTarget: projectId,
+  };
+  await db.query("UPDATE module_projects SET config_json = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND organization_id = $3", [JSON.stringify(config), projectId, session.organization.id]);
+  await enqueueProjectWorkerJob(session.organization.id, projectId, `Introduction IA demandée (${adapter}).`);
+  await logAudit({ organizationId: session.organization.id, userId: session.user.id, action: "recipe.intro.worker", entityType: "recipe-creator", entityId: projectId, metadata: { adapter } });
+  revalidatePath(`/dashboard/tools/recipe-creator/projects/${projectId}`);
+  revalidatePath("/dashboard/automations");
+  return { message: `Introduction demandée via ${adapter} (worker local). Le texte arrivera en nouvelle version ci-dessous.` };
+}
+
+export async function applyWorkerIntroAction(formData: FormData) {
+  const session = await requireSession();
+  const projectId = String(formData.get("projectId") || "");
+  const workerOutputId = String(formData.get("workerOutputId") || "");
+  if (!projectId || !workerOutputId) return;
+  const db = await getDb();
+  const worker = await db.query<{ content_json: string }>("SELECT content_json FROM module_outputs WHERE id = $1 AND project_id = $2 AND organization_id = $3 LIMIT 1", [workerOutputId, projectId, session.organization.id]);
+  const latest = await db.query<{ id: string; content_json: string }>("SELECT id, content_json FROM module_outputs WHERE project_id = $1 AND organization_id = $2 AND output_type = 'recipe_draft' ORDER BY created_at DESC LIMIT 1", [projectId, session.organization.id]);
+  if (!worker.rows[0] || !latest.rows[0]) return;
+  let intro = "";
+  try {
+    const parsed = JSON.parse(worker.rows[0].content_json) as { text?: string };
+    intro = String(parsed.text || "").trim().slice(0, 2000);
+  } catch {
+    return;
+  }
+  if (intro.length < 20) return;
+  let article: ReturnType<typeof buildRecipeArticle>;
+  let savedInputs: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(latest.rows[0].content_json) as ReturnType<typeof buildRecipeArticle> & { meta?: { inputs?: Record<string, unknown> } };
+    article = parsed;
+    savedInputs = parsed.meta?.inputs || {};
+  } catch {
+    return;
+  }
+  article = buildRecipeArticle({
+    title: article.title,
+    ingredients: article.ingredients,
+    steps: article.instructions,
+    focusKeyword: article.focusKeyword,
+    language: String(savedInputs.language || "en"),
+    metaDescription: article.metaDescription,
+    imageDirection: String(savedInputs.imageDirection || ""),
+    imagePrompts: article.imagePrompts,
+    seoTitle: article.seoTitle,
+    authorName: article.authorName,
+    aiBody: intro,
+  });
+  await saveRecipeOutput(session.organization.id, session.user.id, projectId, article, true, { appliedWorkerIntro: workerOutputId });
+  await logAudit({ organizationId: session.organization.id, userId: session.user.id, action: "recipe.intro.applied", entityType: "recipe-creator", entityId: projectId });
+  revalidatePath(`/dashboard/tools/recipe-creator/projects/${projectId}`);
+}
+
 export async function sendRecipeImagesToWorkerAction(_state: RecipeState, formData: FormData): Promise<RecipeState> {
   const session = await requireSession();
   const projectId = String(formData.get("projectId") || "");
