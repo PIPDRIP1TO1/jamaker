@@ -68,12 +68,15 @@ try {
   console.error("Adapter chatgpt indisponible :", (error && error.message) || error);
 }
 try {
+  ADAPTERS.deepseek = require("./adapters/deepseek.js").deepseekArticle;
+} catch (error) {
+  console.error("Adapter deepseek indisponible :", (error && error.message) || error);
+}
+try {
   ADAPTERS["gemini-images"] = require("./adapters/gemini-images.js").geminiImages;
 } catch (error) {
   console.error("Adapter gemini-images indisponible :", (error && error.message) || error);
 }
-// Exemple futur :
-// ADAPTERS.deepseek = require("./adapters/deepseek.js").deepseekArticle;
 
 function pickAdapter(job) {
   let inputs = {};
@@ -108,7 +111,7 @@ async function runOnce() {
 }
 
 async function main() {
-  console.log(`Worker JA MAKER → ${BASE_URL} (poll ${POLL_MS}ms)`);
+  console.log(`Worker JA MAKER → ${BASE_URL} (poll ${POLL_MS}ms) [adapters: ${Object.keys(ADAPTERS).join(",")}]`);
   for (;;) {
     try {
       await runOnce();
