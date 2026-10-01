@@ -11,16 +11,6 @@ const NAV_TIMEOUT_MS = 60000;
 const ANSWER_TIMEOUT_MS = 240000;
 const POLL_MS = 2000;
 
-function chromePaths() {
-  return [
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    (process.env.LOCALAPPDATA || "") + "\\Google\\Chrome\\Application\\chrome.exe",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-  ].filter(Boolean);
-}
-
 // Re-exportés pour compatibilité (gemini-images, scripts).
 module.exports.profileDir = profileDir;
 module.exports.loadMapping = loadMapping;
@@ -116,31 +106,49 @@ async function evaluate(cdp, expression, awaitPromise) {
 }
 
 const COMPOSER_JS = `(() => {
-  const el = document.querySelector('#prompt-textarea') || document.querySelector('form textarea') || document.querySelector('[contenteditable="true"]');
+  const el = document.querySelector('form [contenteditable="true"]') || document.querySelector('#prompt-textarea') || document.querySelector('form textarea');
   return !!el;
 })()`;
 
 const SEND_JS = `(TEXT => {
-  const box = document.querySelector('#prompt-textarea') || document.querySelector('form textarea');
+  const box = document.querySelector('form [contenteditable="true"]') || document.querySelector('#prompt-textarea') || document.querySelector('form textarea');
   if (!box) return 'no-composer';
+  const form = box.closest('form');
+  if (!form) return 'no-form';
+  const btnInfo = Array.from(form.querySelectorAll('button')).map((b) => (b.getAttribute('type') || '') + '/' + (b.getAttribute('aria-label') || '') + '/' + (b.getAttribute('data-testid') || '')).join(' ');
   box.focus();
-  document.execCommand('selectAll', false, null);
-  document.execCommand('insertText', false, TEXT);
+  const isEditable = box.getAttribute && box.getAttribute('contenteditable') === 'true';
+  if (isEditable) {
+    document.execCommand('selectAll', false, null);
+    if (!document.execCommand('insertText', false, TEXT)) {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('insertText', false, TEXT);
+    }
+  } else {
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box), 'value')?.set || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    if (setter) setter.call(box, TEXT); else box.value = TEXT;
+  }
   box.dispatchEvent(new Event('input', { bubbles: true }));
   box.dispatchEvent(new Event('change', { bubbles: true }));
-  const btn = document.querySelector('[data-testid="send-button"]');
-  if (btn) { btn.click(); return 'clicked'; }
+  const btn = form.querySelector('[data-testid="send-button"]') || form.querySelector('button[type="submit"]') || form.querySelector('button[aria-label*="Envoyer" i]') || form.querySelector('button[aria-label*="Send" i]');
+  if (btn) { btn.click(); return 'clicked:' + btnInfo; }
   const ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true });
   box.dispatchEvent(ev);
   return 'enter';
 })`;
 
 const ANSWER_JS = `(() => {
-  const nodes = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
-  if (!nodes.length) return JSON.stringify({ count: 0, streaming: true, text: '' });
-  const last = nodes[nodes.length - 1];
-  const streaming = !!document.querySelector('[data-testid="stop-button"], [aria-label="Stop generating"]');
-  return JSON.stringify({ count: nodes.length, streaming, text: (last.innerText || '').slice(0, 12000) });
+  const legacy = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+  const nodes = legacy.length ? legacy : Array.from(document.querySelectorAll('div[data-chatgpt-selection-message-id]'));
+  const stopBtn = document.querySelector('[data-testid="stop-button"], button[aria-label*="Arrêter" i], button[aria-label*="Stop" i]');
+  const clean = (el) => (el.innerText || '').split('ChatGPT peut faire des erreurs')[0].trim();
+  const texts = nodes.map(clean).filter((t) => t.length > 0);
+  const text = texts.length ? texts[texts.length - 1].slice(0, 12000) : '';
+  return JSON.stringify({ count: texts.length, streaming: !!stopBtn, text });
 })()`;
 
 async function chatgptArticle(job, logs) {
@@ -157,10 +165,11 @@ async function chatgptArticle(job, logs) {
     : "Écris une introduction de recette courte (120 mots).";
   const dir = profileDir("chatgpt", profile, mapping);
   if (!fs.existsSync(dir)) throw new Error(`Profil local introuvable : ${dir}. Lancez « npm run login -- chatgpt "${profile}" » d'abord.`);
-  const chrome = chromePaths().find((p) => fs.existsSync(p));
-  if (!chrome) throw new Error("Chrome introuvable sur cette machine.");
+  const { findBrowser, stealthArgs, displayArgs, applyStealth } = require("../stealth.js");
+  const chrome = findBrowser();
+  if (!chrome) throw new Error("Aucun navigateur trouvé (VCBrowser ou Chrome).");
   const port = 9333 + Math.floor(Math.random() * 60);
-  logs.push({ level: "info", message: `ChatGPT web : profil « ${profile} », invite envoyée.` });
+  logs.push({ level: "info", message: `ChatGPT web : profil « ${profile} » (${chrome.includes("VCBrowser") ? "VCBrowser stealth" : "Chrome"}).` });
   const { killProfileLock } = require("../profiles.js");
   killProfileLock(dir);
   await new Promise((r) => setTimeout(r, 2000));
@@ -168,20 +177,20 @@ async function chatgptArticle(job, logs) {
   const child = spawn(chrome, [
     `--user-data-dir=${dir}`,
     `--remote-debugging-port=${port}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--headless=new",
+    ...stealthArgs(),
+    ...displayArgs(false),
     "about:blank",
   ], { detached: true, stdio: "ignore" });
   child.unref();
   let cdp = null;
   try {
-    await waitJson(`http://127.0.0.1:${port}/json/version`, 20000);
+    const versionInfo = await waitJson(`http://127.0.0.1:${port}/json/version`, 20000);
     throwIfDead(child, "chatgpt", profile);
     const targets = await waitJson(`http://127.0.0.1:${port}/json/list`, NAV_TIMEOUT_MS, (list) => Array.isArray(list) && list.some((t) => t.type === "page"));
     let page = targets.find((t) => t.type === "page" && t.url.startsWith("http")) || targets.find((t) => t.type === "page");
     if (!page || !page.webSocketDebuggerUrl) throw new Error("Onglet Chrome introuvable.");
     cdp = await connect(page.webSocketDebuggerUrl);
+    await applyStealth(cdp, versionInfo && versionInfo.Browser, { spoof: false });
     await cdp.send("Page.enable", {});
     await cdp.send("Runtime.enable", {});
     await cdp.send("Page.navigate", { url: CHATGPT_URL });

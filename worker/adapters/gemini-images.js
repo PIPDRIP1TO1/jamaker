@@ -12,16 +12,6 @@ const NAV_TIMEOUT_MS = 60000;
 const IMAGE_TIMEOUT_MS = 600000;
 const POLL_MS = 3000;
 
-function chromePaths() {
-  return [
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    (process.env.LOCALAPPDATA || "") + "\\Google\\Chrome\\Application\\chrome.exe",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-  ].filter(Boolean);
-}
-
 async function waitJson(url, timeoutMs, predicate) {
   const start = Date.now();
   for (;;) {
@@ -186,10 +176,11 @@ async function geminiImages(job, logs) {
   if (!jobs.length) throw new Error("Aucun prompt image dans le projet (générez d'abord le brouillon).");
   const dir = profileDir("gemini", profile, mapping);
   if (!fs.existsSync(dir)) throw new Error(`Profil local introuvable : ${dir}. Lancez « npm run login -- gemini "${profile}" » d'abord.`);
-  const chrome = chromePaths().find((p) => fs.existsSync(p));
-  if (!chrome) throw new Error("Chrome introuvable sur cette machine.");
+  const { findBrowser, stealthArgs, displayArgs, applyStealth } = require("../stealth.js");
+  const chrome = findBrowser();
+  if (!chrome) throw new Error("Aucun navigateur trouvé (VCBrowser ou Chrome).");
   const port = 9433 + Math.floor(Math.random() * 60);
-  logs.push({ level: "info", message: `Gemini web : profil « ${profile} », ${jobs.length} image(s) à générer.` });
+  logs.push({ level: "info", message: `Gemini web : profil « ${profile} », ${jobs.length} image(s) à générer (${chrome.includes("VCBrowser") ? "VCBrowser stealth" : "Chrome"}).` });
   const { killProfileLock } = require("../profiles.js");
   killProfileLock(dir);
   await new Promise((r) => setTimeout(r, 2000));
@@ -197,20 +188,20 @@ async function geminiImages(job, logs) {
   const child = spawn(chrome, [
     `--user-data-dir=${dir}`,
     `--remote-debugging-port=${port}`,
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--headless=new",
+    ...stealthArgs(),
+    ...displayArgs(true),
     "about:blank",
   ], { detached: true, stdio: "ignore" });
   child.unref();
   let cdp = null;
   try {
-    await waitJson(`http://127.0.0.1:${port}/json/version`, 20000);
+    const versionInfo = await waitJson(`http://127.0.0.1:${port}/json/version`, 20000);
     throwIfDead(child, profile);
     const targets = await waitJson(`http://127.0.0.1:${port}/json/list`, NAV_TIMEOUT_MS, (list) => Array.isArray(list) && list.some((t) => t.type === "page"));
     const page = targets.find((t) => t.type === "page" && t.url.startsWith("http")) || targets.find((t) => t.type === "page");
     if (!page || !page.webSocketDebuggerUrl) throw new Error("Onglet Chrome introuvable.");
     cdp = await connect(page.webSocketDebuggerUrl);
+    await applyStealth(cdp, versionInfo && versionInfo.Browser);
     await cdp.send("Page.enable", {});
     await cdp.send("Runtime.enable", {});
     await cdp.send("Page.navigate", { url: GEMINI_URL });

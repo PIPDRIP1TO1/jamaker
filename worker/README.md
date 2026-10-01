@@ -33,6 +33,21 @@ Comme `D:\VIRAL CLONER\source\automations\deepseekBrowser.js` :
 - jamais de secret navigateur envoyé au SaaS : seuls `logs` + `output` remontent ;
 - choisissez l'adapter via `inputs.workerAdapter` dans la config du projet.
 
+## Stealth navigateur (porté de VIRAL CLONER VCBrowser, gratuit)
+
+`worker/stealth.js`, appliqué par tous les adapters, zéro dépendance :
+
+- **Binaire :** Chrome système par défaut (vérifié bout-à-bout). `VCBrowser.exe`
+  exige le harness VIRAL et refuse le lancement standalone : activable
+  uniquement via `JAMAKER_BROWSER_PATH` explicite (expérimental).
+- **Flags :** anti-automation (`AutomationControlled` off), WebRTC IP policy,
+  locale fr-MA, fenêtre 1920×1080, crash-bubbles off, `--headless=new`.
+- **Spoof CDP** (`Page.addScriptToEvaluateOnNewDocument`) : `navigator.webdriver`
+  masqué, objet `window.chrome`, 3 plugins factices, langues fr-MA/fr/en,
+  permissions notifications denied, `document.hidden=false`.
+- **Identité :** User-Agent Chrome réel (version détectée) + timezone
+  `JAMAKER_TZ` (défaut `Africa/Casablanca`) + locale fr-MA.
+
 ## Mapping comptes SaaS → profils locaux
 
 Les comptes déclarés dans **Mes connexions → Comptes navigateur**
