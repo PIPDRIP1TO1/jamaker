@@ -5,8 +5,8 @@ import { revalidatePath } from "next/cache";
 import { requireSession } from "@/lib/auth/session";
 import { getDb } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
-import { buildRecipeArticle, isImageOnlyBrief, parseRecipeBrief } from "@/lib/recipe";
-import { getWordPressConnection, getWordPressCredentials, publishWordPressDraft } from "@/lib/wordpress";
+import { buildRecipeArticle, isImageOnlyBrief, parseInternalLinks, parseRecipeBrief } from "@/lib/recipe";
+import { getWordPressConnection, getWordPressCredentials, publishRecipeComplete } from "@/lib/wordpress";
 import { enqueueProjectWorkerJob } from "@/lib/automation-engine";
 
 export type RecipeState = { message?: string; aiUsed?: boolean };
@@ -66,7 +66,7 @@ export async function generateRecipeAction(_state: RecipeState, formData: FormDa
   let aiBody: string | null = null;
   const aiUsed = false;
 
-  const article = buildRecipeArticle({ title, ingredients, steps, focusKeyword, language, metaDescription, imageDirection, imagePrompts, aiBody, seoTitle: seoTitle || undefined, authorName });
+  const article = buildRecipeArticle({ title, ingredients, steps, focusKeyword, language, metaDescription, imageDirection, imagePrompts, aiBody, seoTitle: seoTitle || undefined, authorName, internalLinks: parseInternalLinks(String(formData.get("internalLinks") || "")) });
   // Photos pro Pexels si clé connectée (gratuit, fiable). Best-effort, jamais bloquant.
   try {
     const { getPexelsKey, fetchStockPhotos } = await import("@/lib/pexels");
@@ -75,7 +75,7 @@ export async function generateRecipeAction(_state: RecipeState, formData: FormDa
   } catch {
     // ignore
   }
-  await saveRecipeOutput(session.organization.id, session.user.id, projectId, article, aiUsed, { recipeTitle: title, ingredients: ingredients.join("\n"), steps: steps.join("\n"), focusKeyword, language, metaDescription, imageDirection, seoTitle, authorName, duplicatePolicy: duplicatePolicyValue, promptFeatured: imagePrompts.featured.slice(0, 1500), promptHero: imagePrompts.hero.slice(0, 1500), promptIngredients: imagePrompts.ingredients.slice(0, 1500), promptServing: imagePrompts.serving.slice(0, 1500), brief: briefRaw.slice(0, 8000) });
+  await saveRecipeOutput(session.organization.id, session.user.id, projectId, article, aiUsed, { recipeTitle: title, ingredients: ingredients.join("\n"), steps: steps.join("\n"), focusKeyword, language, metaDescription, imageDirection, seoTitle, authorName, internalLinks: String(formData.get("internalLinks") || ""), duplicatePolicy: duplicatePolicyValue, promptFeatured: imagePrompts.featured.slice(0, 1500), promptHero: imagePrompts.hero.slice(0, 1500), promptIngredients: imagePrompts.ingredients.slice(0, 1500), promptServing: imagePrompts.serving.slice(0, 1500), brief: briefRaw.slice(0, 8000) });
   revalidatePath(`/dashboard/tools/recipe-creator/projects/${projectId}`);
   return { message: "Brouillon généré en local (gratuit). L'IA via vos comptes navigateur arrivera avec les adapters du worker.", aiUsed };
 }
@@ -100,14 +100,20 @@ export async function reviseRecipeAction(_state: RecipeState, formData: FormData
   // Révision locale traçable : ajoute la consigne dans l'intro (nouvelle version).
   const revisedIntroduction = `${article.introduction}\n\n[Révision demandée : ${instruction}]`;
   // Reconstruit Schema + audit après chaque révision pour ne jamais afficher un score périmé.
+  // Conserve langue, liens internes, SEO et auteur de la version précédente.
+  const prevInputs = ((article as unknown as { meta?: { inputs?: Record<string, unknown> } }).meta?.inputs || {}) as Record<string, unknown>;
   article = buildRecipeArticle({
     title: article.title,
     ingredients: article.ingredients,
     steps: article.instructions,
     focusKeyword: article.focusKeyword,
+    language: String(prevInputs.language || "en"),
     metaDescription: article.metaDescription,
     imagePrompts: article.imagePrompts,
     aiBody: revisedIntroduction,
+    seoTitle: article.seoTitle,
+    authorName: article.authorName,
+    internalLinks: article.internalLinks,
   });
   await saveRecipeOutput(session.organization.id, session.user.id, projectId, article, aiUsed, { revisionOf: outputId, instruction });
   revalidatePath(`/dashboard/tools/recipe-creator/projects/${projectId}`);
@@ -187,6 +193,7 @@ export async function applyWorkerIntroAction(formData: FormData) {
     seoTitle: article.seoTitle,
     authorName: article.authorName,
     aiBody: intro,
+    internalLinks: article.internalLinks,
   });
   await saveRecipeOutput(session.organization.id, session.user.id, projectId, article, true, { appliedWorkerIntro: workerOutputId });
   await logAudit({ organizationId: session.organization.id, userId: session.user.id, action: "recipe.intro.applied", entityType: "recipe-creator", entityId: projectId });
@@ -257,14 +264,34 @@ export async function publishRecipeToWordPressAction(_state: PublishState, formD
     return { message: "Brouillon illisible." };
   }
   if (!article.seoAudit?.publishReady) return { message: "Publication bloquée : corrigez les erreurs critiques indiquées dans l’audit SEO puis générez une nouvelle version." };
-  const result = await publishWordPressDraft(creds, {
-    title: article.title,
-    content: article.gutenberg,
-    excerpt: article.metaDescription,
-  });
+  // Images Gemini du worker (4 rôles) : uploadées vers la médiathèque WP + image mise en avant.
+  let workerImages: Array<{ role: string; dataUrl: string }> = [];
+  try {
+    const imgs = await db.query<{ content_json: string }>(
+      `SELECT content_json FROM module_outputs WHERE project_id = $1 AND organization_id = $2 AND output_type = 'worker_result' ORDER BY created_at DESC LIMIT 10`,
+      [projectId, session.organization.id],
+    );
+    for (const row of imgs.rows) {
+      try {
+        const parsed = JSON.parse(row.content_json) as { mode?: string; images?: Array<{ role: string; dataUrl: string }> };
+        if (parsed.mode === "worker-gemini-images" && Array.isArray(parsed.images) && parsed.images.length) {
+          workerImages = parsed.images.filter((img) => img && typeof img.role === "string" && typeof img.dataUrl === "string").slice(0, 4);
+          break;
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    workerImages = [];
+  }
+  const result = await publishRecipeComplete(creds, article, workerImages);
   if (!result.ok) return { message: result.message };
   await db.query("UPDATE module_projects SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND organization_id = $2", [projectId, session.organization.id]);
-  await logAudit({ organizationId: session.organization.id, userId: session.user.id, action: "recipe.publish.wordpress", entityType: "recipe-creator", entityId: projectId, metadata: { postId: result.postId } });
+  await logAudit({ organizationId: session.organization.id, userId: session.user.id, action: "recipe.publish.wordpress", entityType: "recipe-creator", entityId: projectId, metadata: { postId: result.postId, imagesUploaded: result.imagesUploaded, wprmId: result.wprmId } });
   revalidatePath(`/dashboard/tools/recipe-creator/projects/${projectId}`);
-  return { message: `Brouillon WordPress créé (post #${result.postId}). Publiez-le depuis WP après relecture.`, link: result.link };
+  const extras: string[] = [];
+  extras.push(`Images : ${result.imagesUploaded}/${result.imagesTotal}${result.imagesUploaded < result.imagesTotal ? " (générez les 4 images via le worker Gemini avant de publier)" : " (médiathèque + mise en avant OK)"}`);
+  extras.push(result.wprmId ? `Carte WP Recipe Maker #${result.wprmId} intégrée.` : "WP Recipe Maker non détecté : installez le plugin pour activer la carte recette (shortcode conservé).");
+  return { message: `Brouillon WordPress créé (post #${result.postId}). ${extras.join(" ")} Publiez-le depuis WP après relecture.`, link: result.link };
 }

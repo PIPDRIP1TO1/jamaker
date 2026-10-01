@@ -47,6 +47,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
       promptServing: String(inputs.promptServing || ""),
       seoTitle: String(inputs.seoTitle || ""),
       authorName: String(inputs.authorName || ""),
+      internalLinks: String(inputs.internalLinks || ""),
       duplicatePolicy: String(inputs.duplicatePolicy || "ask"),
     };
     const browserAi = await hasBrowserAi(session.organization.id);

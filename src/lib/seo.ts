@@ -97,6 +97,8 @@ export function auditRecipeSeo(input: {
   faq: Array<{ q: string; a: string }>;
   schema: Record<string, unknown>;
   imageAltTexts: string[];
+  internalLinksCount?: number;
+  wordCount?: number;
 }): SeoAudit {
   const checks: SeoCheck[] = [];
   const add = (id: string, label: string, ok: boolean, maximum: number, detailOk: string, detailFail: string, severity: SeoSeverity = "warning") => {
@@ -112,6 +114,8 @@ export function auditRecipeSeo(input: {
   add("instructions", "Étapes exploitables", input.instructions.length >= 3 && input.instructions.every((step) => step.length >= 12), 14, `${input.instructions.length} étapes détaillées.`, "Il faut au moins 3 étapes claires et détaillées.", "critical");
   add("faq", "Réponses aux questions", input.faq.length >= 3 && input.faq.every((item) => item.a.length >= 35), 8, `${input.faq.length} réponses utiles.`, "Ajoutez au moins 3 réponses substantielles.");
   add("images", "SEO des images", input.imageAltTexts.length === 4 && input.imageAltTexts.every((alt) => alt.length >= 12), 8, "4 textes alternatifs préparés.", "Préparez un texte alternatif descriptif pour chaque image.");
+  add("internal-links", "Maillage interne", (input.internalLinksCount || 0) >= 1, 5, `${input.internalLinksCount} lien(s) interne(s) vers votre site.`, "Ajoutez au moins 1 lien vers une autre page de votre site (Titre | URL).");
+  add("word-count", "Article complet", (input.wordCount || 0) >= 600, 5, `${input.wordCount} mots : article complet.`, "Visez 600+ mots : intro, variantes, conservation, FAQ.");
   const schemaValid = input.schema["@type"] === "Recipe" && Array.isArray(input.schema.recipeIngredient) && Array.isArray(input.schema.recipeInstructions);
   add("schema", "Recipe Schema", schemaValid, 10, "Le JSON-LD Recipe contient les propriétés essentielles.", "Recipe Schema absent ou incomplet.", "critical");
 

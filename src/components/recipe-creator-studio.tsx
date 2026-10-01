@@ -5,7 +5,7 @@ import { applyWorkerIntroAction, generateRecipeAction, publishRecipeToWordPressA
 import { duplicateExampleAction } from "@/app/actions/projects";
 
 type Output = { id: string; title: string; content_json: string; created_at: string };
-type Article = { title: string; seoTitle: string; metaDescription: string; focusKeyword: string; introduction: string; ingredients: string[]; instructions: string[]; tips: string[]; faq: Array<{ q: string; a: string }>; imagePrompts: { featured: string; hero: string; ingredients: string; serving: string }; imageUrls?: { featured: string; hero: string; ingredients: string; serving: string }; stockPhotos?: Array<{ url: string; alt: string; photographer: string }>; gutenberg: string; seoBrief?: { primaryKeyword: string; searchIntent: string; audience: string; secondaryKeywords: string[]; outline: string[]; questionsToAnswer: string[]; internalLinkIdeas: string[]; imageSeo: Array<{ role: string; fileName: string; altText: string }> }; seoAudit?: { score: number; grade: string; publishReady: boolean; criticalCount: number; checks: Array<{ id: string; label: string; severity: "pass" | "warning" | "critical"; points: number; maximum: number; detail: string }> } };
+type Article = { title: string; seoTitle: string; metaDescription: string; focusKeyword: string; introduction: string; ingredients: string[]; instructions: string[]; tips: string[]; faq: Array<{ q: string; a: string }>; internalLinks?: Array<{ label: string; url: string }>; wordCount?: number; imagePrompts: { featured: string; hero: string; ingredients: string; serving: string }; imageUrls?: { featured: string; hero: string; ingredients: string; serving: string }; stockPhotos?: Array<{ url: string; alt: string; photographer: string }>; gutenberg: string; seoBrief?: { primaryKeyword: string; searchIntent: string; audience: string; secondaryKeywords: string[]; outline: string[]; questionsToAnswer: string[]; internalLinkIdeas: string[]; imageSeo: Array<{ role: string; fileName: string; altText: string }> }; seoAudit?: { score: number; grade: string; publishReady: boolean; criticalCount: number; checks: Array<{ id: string; label: string; severity: "pass" | "warning" | "critical"; points: number; maximum: number; detail: string }> } };
 
 function cleanItem(value: string) {
   return value.replace(/^(\s*[-*•]\s*|\s*\d+[.)]\s*)/, "").trim();
@@ -87,6 +87,7 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
   const [seoTitle, setSeoTitle] = useState(initial.seoTitle || "");
   const [author, setAuthor] = useState(initial.authorName || "");
   const [dupPolicy, setDupPolicy] = useState(initial.duplicatePolicy || "ask");
+  const [internalLinks, setInternalLinks] = useState(initial.internalLinks || "");
   const [genState, genAction, genPending] = useActionState(generateRecipeAction, genInitial);
   const [revState, revAction, revPending] = useActionState(reviseRecipeAction, revInitial);
   const [pubState, pubAction, pubPending] = useActionState(publishRecipeToWordPressAction, pubInitial);
@@ -191,6 +192,7 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
             <label>Auteur (rotation auto si vide)<input name="authorName" value={author} onChange={(e) => setAuthor(e.target.value)} placeholder="Ex. Salma B." disabled={isExample} /></label>
             <label>Anti-doublon<select name="duplicatePolicy" value={dupPolicy} onChange={(e) => setDupPolicy(e.target.value)} disabled={isExample}><option value="ask">Demander confirmation</option><option value="force_new">Toujours forcer</option><option value="update_existing">Préparer la mise à jour</option></select></label>
             <label className="setting-wide">Direction images<textarea name="imageDirection" value={direction} onChange={(e) => setDirection(e.target.value)} rows={2} disabled={isExample} /></label>
+            <label className="setting-wide">Liens internes (maillage SEO — un par ligne : Titre | https://votresite.com/…)<textarea name="internalLinks" value={internalLinks} onChange={(e) => setInternalLinks(e.target.value)} rows={2} placeholder="Ex. Tajine poulet citron | https://monsite.com/tajine-poulet-citron" disabled={isExample} /></label>
             <label className="setting-wide">Prompt image 1 — Featured (4:3)<textarea name="promptFeatured" value={promptFeatured} onChange={(e) => setPromptFeatured(e.target.value)} rows={3} placeholder="Détecté depuis le brief ou à compléter" disabled={isExample} /></label>
             <label className="setting-wide">Prompt image 2 — Hero (3:4)<textarea name="promptHero" value={promptHero} onChange={(e) => setPromptHero(e.target.value)} rows={3} placeholder="Détecté depuis le brief ou à compléter" disabled={isExample} /></label>
             <label className="setting-wide">Prompt image 3 — Ingrédients (3:4)<textarea name="promptIngredients" value={promptIngredients} onChange={(e) => setPromptIngredients(e.target.value)} rows={3} placeholder="Détecté depuis le brief ou à compléter" disabled={isExample} /></label>
@@ -240,7 +242,7 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
         ) : (
           <>
             <h2>{latest.article.title}</h2>
-            <p className="billing-note">SEO : {latest.article.seoTitle} • {latest.article.metaDescription}</p>
+            <p className="billing-note">SEO : {latest.article.seoTitle} • {latest.article.metaDescription}{typeof latest.article.wordCount === "number" ? ` • ${latest.article.wordCount} mots` : ""}</p>
             {latest.article.seoAudit && (
               <div className="seo-dashboard">
                 <div className={`seo-score ${latest.article.seoAudit.publishReady ? "seo-ready" : "seo-blocked"}`}>
@@ -270,6 +272,10 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
             )}
             <div className="output-item"><pre>{`${latest.article.introduction || ""}\n\nINGRÉDIENTS:\n- ${(latest.article.ingredients || []).join("\n- ")}\n\nINSTRUCTIONS:\n${(latest.article.instructions || []).map((s, i) => `${i + 1}. ${s}`).join("\n")}\n\nFAQ:\n${(latest.article.faq || []).map((f) => `Q: ${f.q}\nA: ${f.a}`).join("\n")}`}</pre></div>
             <div className="output-item"><pre>{`IMAGES (prompts pour Gemini) :\n1. ${latest.article.imagePrompts?.featured || ""}\n2. ${latest.article.imagePrompts?.hero || ""}\n3. ${latest.article.imagePrompts?.ingredients || ""}\n4. ${latest.article.imagePrompts?.serving || ""}`}</pre></div>
+            {(latest.article.internalLinks || []).length > 0 && (
+              <div className="output-item"><strong>Maillage interne ({(latest.article.internalLinks || []).length})</strong><ul>{(latest.article.internalLinks || []).map((l) => <li key={l.url}><a href={l.url} target="_blank" rel="noreferrer">{l.label}</a></li>)}</ul></div>
+            )}
+            <p className="billing-note">Carte WP Recipe Maker : créée automatiquement au publish (shortcode remplacé par le vrai id, sinon plugin à installer).</p>
             {latest.article.stockPhotos && latest.article.stockPhotos.length > 0 && (
               <div>
                 <div className="workspace-topline"><span>Photos pro (Pexels, fiable)</span></div>
@@ -299,7 +305,7 @@ export function RecipeCreatorStudio({ projectId, isExample, initial, outputs, ha
               <input type="hidden" name="projectId" value={projectId} />
               <input type="hidden" name="outputId" value={latest.id} />
               <input type="hidden" name="approved" value={canPublish ? "1" : ""} />
-              <small>{canPublish ? (hasWordPress ? "SEO + validations OK — création d’un brouillon WordPress." : "SEO + validations OK — connectez WordPress pour publier.") : latest.article.seoAudit && !latest.article.seoAudit.publishReady ? "Audit SEO bloqué : corrigez les erreurs critiques avant WordPress." : "Validez texte + images pour débloquer la publication."}</small>
+              <small>{canPublish ? (hasWordPress ? `SEO + validations OK — ${workerImages.length > 0 ? `${workerImages[0].images.length}/4 image(s) worker prête(s)` : "aucune image worker : prompts seuls"}. Création d’un brouillon WordPress.` : "SEO + validations OK — connectez WordPress pour publier.") : latest.article.seoAudit && !latest.article.seoAudit.publishReady ? "Audit SEO bloqué : corrigez les erreurs critiques avant WordPress." : "Validez texte + images pour débloquer la publication."}</small>
               <button className="button button-small" type="submit" disabled={!canPublish || pubPending}>{pubPending ? "Publication…" : hasWordPress ? "Publier en brouillon WordPress" : "Valider et publier (WP non connecté)"}</button>
             </form>
             {pubState.message && <p className="billing-note" role="status">{pubState.message}</p>}
